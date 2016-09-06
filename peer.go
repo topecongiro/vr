@@ -1,49 +1,52 @@
-package net
+package vr
 
 import (
 	"context"
 	"encoding/gob"
+	"fmt"
 	"io"
 	"log"
 	"net"
 	"sync"
 	"time"
-
-	"github.com/seuchi/vr"
 )
 
 // Peer gives an access to remote replicas.
 type Peer interface {
-	send(m vr.Msg)
+	send(m Msg)
 	stop()
+	// for debug
+	print()
 }
 
 // peer is a canonical implementation of Peer interface.
 type peer struct {
-	id vr.ID
-	vr vr.VR
+	id ID
+	vr Mediator
 
 	status *peerStatus
 
 	conn *net.TCPConn
+	enc  *gob.Encoder
+	dec  *gob.Decoder
 
 	mu     sync.Mutex
 	paused bool
 
-	recvc chan vr.Msg
+	recvc chan Msg // Transfer messages to state machine
 
 	cancel context.CancelFunc
 	stopc  chan struct{}
 }
 
 type peerStatus struct {
-	id     vr.ID
+	id     ID
 	mu     sync.Mutex
 	active bool
 	since  time.Time
 }
 
-func startPeer(tr *Transport, peerID vr.ID, conn *net.TCPConn) *peer {
+func startPeer(tr *Transport, peerID ID, conn *net.TCPConn) *peer {
 	status := &peerStatus{
 		id: peerID,
 	}
@@ -52,7 +55,9 @@ func startPeer(tr *Transport, peerID vr.ID, conn *net.TCPConn) *peer {
 		vr:     tr.VR,
 		status: status,
 		conn:   conn,
-		recvc:  make(chan vr.Msg),
+		enc:    gob.NewEncoder(conn),
+		dec:    gob.NewDecoder(conn),
+		recvc:  make(chan Msg),
 		stopc:  make(chan struct{}),
 	}
 
@@ -69,7 +74,8 @@ func (p *peer) transferToVR(ctx context.Context) {
 	for {
 		select {
 		case msg := <-p.recvc:
-			if err := p.vr.Process(ctx, msg); err != nil {
+			err := p.vr.Process(ctx, msg)
+			if err != nil {
 				log.Printf("failed to process messsage (%v)", err)
 			}
 		case <-p.stopc:
@@ -79,21 +85,32 @@ func (p *peer) transferToVR(ctx context.Context) {
 }
 
 func (p *peer) handleInbound() {
-	dec := gob.NewDecoder(p.conn)
 	for {
-		var msg vr.Msg
-		if err := dec.Decode(&msg); err != nil {
+		msg := &Msg{}
+		if err := p.dec.Decode(msg); err != nil {
 			if err == io.EOF {
 				p.stop()
 				return
 			}
+			log.Printf("%s\n", err)
 		}
 		select {
-		case p.recvc <- msg:
+		case p.recvc <- *msg:
+			log.Printf("Replica(%d) received message from %d\n", msg.To, msg.From)
 		case <-p.stopc:
 			return
 		}
 	}
+}
+
+func (p *peer) send(m Msg) {
+	log.Printf("Node (%d) sending to Node (%d)\n", m.From, m.To)
+	if err := p.enc.Encode(m); err != nil {
+		if err == io.EOF {
+			p.stop()
+		}
+	}
+	// log.Printf("***Node (%d) sent to Node (%d)***\n", m.From, m.To)
 }
 
 func (p *peer) stop() {
@@ -101,11 +118,6 @@ func (p *peer) stop() {
 	_ = p.conn.Close()
 }
 
-func (p *peer) send(m vr.Msg) {
-	enc := gob.NewEncoder(p.conn)
-	if err := enc.Encode(m); err != nil {
-		if err == io.EOF {
-			p.stop()
-		}
-	}
+func (p *peer) print() {
+	fmt.Printf("Peer(%d, %s): %s\n", p.id, p.conn.LocalAddr().String(), p.conn.RemoteAddr().String())
 }
