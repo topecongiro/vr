@@ -2,6 +2,7 @@ package vr
 
 import (
 	"net"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -92,12 +93,13 @@ func newReplicaT(id ID, laddr string, config map[ID]string) (*Replica, error) {
 		sm:        &SM{},
 		transport: transport,
 		vr:        vr,
+		laddr:     ":123" + strconv.Itoa(int(id)),
 	}
 
 	return replica, nil
 }
 
-func TestReplica(t *testing.T) {
+func _TestReplica(t *testing.T) {
 	r1, err := newReplicaT(1, ":8080", map[ID]string{2: ":8081", 3: ":8082"})
 	if err != nil {
 		t.Fatal(err)

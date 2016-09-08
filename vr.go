@@ -1,13 +1,11 @@
 package vr
 
-import (
-	"context"
-	"net"
-)
+import "net"
 
 // Replicator fulfills the role of replica in viewstamped replication protocol
 type Replicator interface {
 	Run() error
+	Handle() // Handle client's request
 	Transport() Transporter
 	Consensus() Mediator
 	StateMachine() StateMachine
@@ -27,14 +25,15 @@ type Transporter interface {
 
 // Mediator implements Viewstamped Replication consesnsus protocol
 type Mediator interface {
-	Process(ctx context.Context, m Msg) error
+	Process(m Msg) error
 	StartViewChange() error
+	AddClient(ID, *net.TCPConn) error
 	Start() error
 }
 
 // StateMachine implements genereal methods for replicated state machine.
 type StateMachine interface {
-	Exec(Command, []byte) ([]byte, error)
+	Exec(Command, []byte) (int, error)
 	Start() error
 }
 
@@ -43,4 +42,9 @@ type Logger interface {
 	Append(Msg)
 	Get(ID) Msg
 	Start() error
+}
+
+// NewVR starts the local VR server
+func NewVR() Replicator {
+	return nil
 }

@@ -1,5 +1,7 @@
 package vr
 
+import "log"
+
 // Log implements Logger interface
 type Log struct {
 	log map[ID]Msg
@@ -14,6 +16,7 @@ func NewLog() *Log {
 
 // Append appends the given message to the Log
 func (l *Log) Append(m Msg) {
+	log.Printf("log[%d] = %d\n", m.Op, m.Client)
 	l.log[m.Op] = m
 }
 

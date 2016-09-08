@@ -1,9 +1,10 @@
 package vr
 
 import (
-	"context"
+	"encoding/gob"
 	"errors"
 	"log"
+	"net"
 	"sync"
 	"time"
 )
@@ -12,11 +13,12 @@ import (
 type Command int
 
 // Result is the return value of the state machine.
-type Result interface{}
+type Result int
 
 type clientInfo struct {
 	recent ID
 	result Msg
+	conn   *net.TCPConn
 }
 
 // canonical implementaiton of Mediator interface
@@ -43,7 +45,7 @@ type vrMediator struct {
 }
 
 // Process runs the protocol considering the given message
-func (vr *vrMediator) Process(ctx context.Context, m Msg) error {
+func (vr *vrMediator) Process(m Msg) error {
 
 	vr.mu.Lock()
 	defer vr.mu.Unlock()
@@ -51,17 +53,21 @@ func (vr *vrMediator) Process(ctx context.Context, m Msg) error {
 	switch m.Type {
 	case RequestT:
 		if vr.isLeader() {
+			log.Printf("Primary %d received request\n", vr.ID)
+			m.print()
 			ci := vr.ClientTable[m.Client]
 			if m.Request < ci.recent {
 				return nil // Drop the outdated request
 			} else if m.Request == ci.recent {
-				vr.send(ci.result) // Resend to the most recent request
+				vr.reply(ci.result) // Resend to the most recent request
 			} else {
 				vr.Op++
+				m.Op = vr.Op
+				m.Commit = vr.Commit
 				vr.log.Append(m)
 				ci.recent = m.Request
 				// Send Prepare message
-				vr.send(Msg{Type: PrepareT, View: vr.View, Op: vr.Op, Commit: vr.Commit, Msg: &m})
+				vr.broadcast(Msg{Client: m.Client, Type: PrepareT, View: vr.View, Op: vr.Op, Commit: vr.Commit, Msg: &m})
 			}
 		}
 	case PrepareT:
@@ -70,14 +76,17 @@ func (vr *vrMediator) Process(ctx context.Context, m Msg) error {
 			// Send PrepareOK
 			vr.Op++
 			vr.log.Append(m)
+			vr.AddClient(m.Client, nil)
 			vr.ClientTable[m.Client].recent = m.Request
 			vr.send(Msg{Type: PrepareOKT, View: vr.View, Op: vr.Op, To: m.View})
+			log.Printf("Replica received prepare\n")
 
 			// Commit up to received commit-number
 			vr.commit(m.Commit)
 		}
 	case PrepareOKT:
 		if vr.isLeader() {
+			log.Printf("receiving prepareok\n")
 			if m.View == vr.View && m.Op == vr.Op {
 				vr.prepareOK[m.From] = true
 			} else {
@@ -85,7 +94,9 @@ func (vr *vrMediator) Process(ctx context.Context, m Msg) error {
 			}
 
 			// commited
-			if len(vr.prepareOK) > vr.quorum() {
+			log.Printf("commit: %d, quorum: %d\n", len(vr.prepareOK), vr.quorum())
+			if len(vr.prepareOK) >= vr.quorum() {
+				log.Printf("Commited\n")
 				vr.commit(vr.Op)
 				vr.prepareOK = make(map[ID]bool)
 			}
@@ -110,14 +121,12 @@ func (vr *vrMediator) Start() error {
 		var debug int
 		id := vr.ID
 		for {
-			// log.Printf("Node(%d): loop %d\n", id, debug)
+			log.Printf("Node(%d): loop %d\n", id, debug)
 			if vr.isLeader() {
 				select {
 				case <-vr.received:
 				case <-time.After(vr.Heartbeat):
-					// log.Printf("Primary(%d) sending heartbeat\n", vr.ID)
-					vr.mu.RLock()
-					defer vr.mu.RUnlock()
+					log.Printf("Primary(%d) sending heartbeat\n", vr.ID)
 					vr.broadcast(Msg{Type: CommitT, View: vr.View, Commit: vr.Commit})
 				}
 			} else {
@@ -140,6 +149,20 @@ func (vr *vrMediator) Start() error {
 // 2. received StartViewChange from other replicas
 func (vr *vrMediator) StartViewChange() error {
 	// TODO: implement view change protocol
+	return nil
+}
+
+// AddClient update the client table with new client
+func (vr *vrMediator) AddClient(id ID, conn *net.TCPConn) error {
+	log.Printf("Replica(%d) add client with id %d\n", vr.ID, id)
+	if _, ok := vr.ClientTable[id]; ok {
+		return nil
+	}
+
+	vr.ClientTable[id] = &clientInfo{
+		conn: conn,
+	}
+
 	return nil
 }
 
@@ -187,24 +210,33 @@ func (vr *vrMediator) commit(upTo ID) {
 		return
 	}
 
-	// primary sends the result to the client
-	var msgs []Msg
-
 	for vr.Commit < upTo {
 		vr.Commit++
 		m := vr.log.Get(vr.Commit)
+		log.Printf("Replica(%d) commiting %d from %d\n", vr.ID, vr.Commit, m.Client)
 		result, err := vr.sm.Exec(m.Command, m.Args)
 		if err != nil {
 			log.Fatal(err)
 		}
-		vr.ClientTable[m.Client].result = Msg{Result: result}
+		ci, ok := vr.ClientTable[m.Client]
+		if !ok {
+			log.Fatal("no client with id")
+		}
+		ci.result = Msg{Result: Result(result)}
 		if vr.isLeader() {
-			msgs = append(msgs, m)
+			vr.reply(m)
 		}
 	}
+}
 
-	if vr.isLeader() {
-		// TODO: Use client specific transport layer instead
-		// vr.transport.broadcast(msgs)
+// send reply to the client
+func (vr *vrMediator) reply(m Msg) {
+	ci, ok := vr.ClientTable[m.Client]
+	if !ok {
+		return
 	}
+
+	log.Printf("primary %d replying to %d(%s)\n", vr.ID, m.Client, ci.conn.RemoteAddr().String())
+	enc := gob.NewEncoder(ci.conn)
+	enc.Encode(&m)
 }

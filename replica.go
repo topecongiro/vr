@@ -1,6 +1,13 @@
 package vr
 
-import "errors"
+import (
+	"encoding/gob"
+	"errors"
+	"fmt"
+	"log"
+	"net"
+	"sync"
+)
 
 type status int
 
@@ -21,10 +28,20 @@ type Replica struct {
 	transport Transporter
 	// Stores the received/commitd requests
 	log Logger
+
+	// socket for client's request
+	laddr string
+	sock  *net.TCPListener
+
+	// clients connection
+	mu      sync.RWMutex
+	clients map[ID]*net.TCPConn
+
+	stopc chan struct{}
 }
 
 // NewReplica starts a new replica with given transport.
-func NewReplica(vr Mediator, sm StateMachine, transport Transporter, log Logger) (*Replica, error) {
+func NewReplica(sockAddr string, vr Mediator, sm StateMachine, transport Transporter, log Logger) (*Replica, error) {
 
 	if vr == nil {
 		// TODO: Set default VR consensus protocol
@@ -45,7 +62,15 @@ func NewReplica(vr Mediator, sm StateMachine, transport Transporter, log Logger)
 		return nil, errors.New("Give me log")
 	}
 
-	return &Replica{vr: vr, sm: sm, transport: transport, log: log}, nil
+	return &Replica{
+		vr:        vr,
+		sm:        sm,
+		transport: transport,
+		log:       log,
+		clients:   make(map[ID]*net.TCPConn),
+		stopc:     make(chan struct{}),
+		laddr:     sockAddr,
+	}, nil
 }
 
 // Run starts the replica as a VR running server
@@ -62,6 +87,18 @@ func (r *Replica) Run() error {
 	if err := r.log.Start(); err != nil {
 		return err
 	}
+
+	addr, err := net.ResolveTCPAddr("tcp", r.laddr)
+	if err != nil {
+		return err
+	}
+
+	r.sock, err = net.ListenTCP("tcp", addr)
+	if err != nil {
+		return err
+	}
+
+	go r.Handle()
 
 	return nil
 }
@@ -87,5 +124,47 @@ func (r *Replica) Log() Logger {
 }
 
 func (r *Replica) debug() {
+	r.mu.RLock()
+	addr := r.sock.Addr()
+	r.mu.RUnlock()
+	fmt.Printf("Node socket addr: %s\n", addr)
 	r.transport.Debug()
+}
+
+// Handle handles requests from clients
+func (r *Replica) Handle() {
+	for {
+		conn, err := r.sock.AcceptTCP()
+		if err != nil {
+			log.Printf("%s\n", err)
+			continue
+		}
+
+		go r.handleConn(conn)
+	}
+}
+
+func (r *Replica) handleConn(conn *net.TCPConn) {
+	dec := gob.NewDecoder(conn)
+	for {
+		msg := Msg{}
+		if err := dec.Decode(&msg); err != nil {
+			log.Printf("Replica(%s): %s\n", r.laddr, err)
+			return
+		}
+		r.vr.AddClient(msg.Client, conn)
+		if err := r.vr.Process(msg); err != nil {
+			log.Fatal("State machine failed")
+		}
+	}
+}
+
+// Send sends a reply message to the client
+func (r *Replica) Send(id ID, msg Msg) {
+	r.mu.RLock()
+	conn := r.clients[id]
+	r.mu.RUnlock()
+
+	enc := gob.NewEncoder(conn)
+	enc.Encode(msg)
 }

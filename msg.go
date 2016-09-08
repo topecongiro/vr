@@ -1,5 +1,7 @@
 package vr
 
+import "fmt"
+
 // MsgType specifies the type of the message
 type MsgType int
 
@@ -50,4 +52,15 @@ type PrepareOK struct {
 type Commit struct {
 	View   uint64
 	Commit uint64
+}
+
+// for debug
+func (m *Msg) print() {
+	if m.Type == RequestT {
+		fmt.Printf("\t***\n\tClinet: %d, Request: %d\n", m.Client, m.Request)
+	} else {
+		fmt.Printf("\t***\n\tTo: %d, From: %d\n", m.To, m.From)
+	}
+
+	fmt.Printf("\tView: %d\n\t***\n", m.View)
 }
