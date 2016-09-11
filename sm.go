@@ -1,6 +1,9 @@
 package vr
 
-import "sync"
+import (
+	"log"
+	"sync"
+)
 
 // SM is canonical implementation of StateMachine interface
 type SM struct {
@@ -22,16 +25,19 @@ func (sm *SM) Exec(com Command, args []byte) (int, error) {
 	case Inc:
 		sm.mu.Lock()
 		sm.x++
+		result = sm.x
 		sm.mu.Unlock()
 	case Dec:
 		sm.mu.Lock()
 		sm.x--
+		result = sm.x
 		sm.mu.Unlock()
 	case Get:
 		sm.mu.RLock()
 		result = sm.x
 		sm.mu.RUnlock()
 	}
+	log.Printf("Executing command: result = %d\n", result)
 	return result, nil
 }
 
