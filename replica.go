@@ -17,6 +17,12 @@ const (
 	recovery
 )
 
+type client struct {
+	conn *net.TCPConn
+	enc  *gob.Encoder
+	dec  *gob.Decoder
+}
+
 // Replica is a canonical implementation of Replicator interface.
 // Currently this is just a placeholder.
 type Replica struct {
@@ -34,8 +40,7 @@ type Replica struct {
 	sock  *net.TCPListener
 
 	// clients connection
-	mu      sync.RWMutex
-	clients map[ID]*net.TCPConn
+	mu sync.RWMutex
 
 	stopc chan struct{}
 }
@@ -67,7 +72,6 @@ func NewReplica(sockAddr string, vr Mediator, sm StateMachine, transport Transpo
 		sm:        sm,
 		transport: transport,
 		log:       log,
-		clients:   make(map[ID]*net.TCPConn),
 		stopc:     make(chan struct{}),
 		laddr:     sockAddr,
 	}, nil
@@ -140,31 +144,6 @@ func (r *Replica) Handle() {
 			continue
 		}
 
-		go r.handleConn(conn)
+		go r.vr.handleClient(conn)
 	}
-}
-
-func (r *Replica) handleConn(conn *net.TCPConn) {
-	dec := gob.NewDecoder(conn)
-	for {
-		msg := Msg{}
-		if err := dec.Decode(&msg); err != nil {
-			log.Printf("Replica(%s): %s\n", r.laddr, err)
-			return
-		}
-		r.vr.AddClient(msg.Client, conn)
-		if err := r.vr.Process(msg); err != nil {
-			log.Fatal("State machine failed")
-		}
-	}
-}
-
-// Send sends a reply message to the client
-func (r *Replica) Send(id ID, msg Msg) {
-	r.mu.RLock()
-	conn := r.clients[id]
-	r.mu.RUnlock()
-
-	enc := gob.NewEncoder(conn)
-	enc.Encode(msg)
 }
