@@ -71,9 +71,7 @@ func (p *peer) handleInbound() {
 				return
 			}
 			p.print()
-			log.Printf("peer(%d): %s\n", p.id, err)
 		}
-		// log.Printf("Replica(%d) received message from %d\n", msg.To, msg.From)
 		if err := p.vr.Process(msg); err != nil {
 			log.Printf("failed to process messsage (%v)", err)
 		}
@@ -81,13 +79,11 @@ func (p *peer) handleInbound() {
 }
 
 func (p *peer) send(m Msg) {
-	// log.Printf("Node (%d) sending to Node (%d)\n", m.From, m.To)
 	if err := p.enc.Encode(m); err != nil {
 		if err == io.EOF {
 			p.stop()
 		}
 	}
-	// log.Printf("***Node (%d) sent to Node (%d)***\n", m.From, m.To)
 }
 
 func (p *peer) stop() {
