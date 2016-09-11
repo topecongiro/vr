@@ -5,15 +5,25 @@ import (
 	"log"
 	"net"
 	"sync"
+	"time"
 )
+
+// ClientConfig is given to the client at the very beginning.
+// this must not be modified.
+type ClientConfig struct {
+	LeaderAddr string
+	ID         ID
+	View       ID
+	Timeout    time.Duration
+}
 
 // Client holds the client-side information
 type Client struct {
 	mu sync.RWMutex
 
+	Config  ClientConfig
 	ID      ID
-	Leader  string // The address of the current leader this Client believes
-	Request ID     // Monotonical increasing reqeust number
+	Request ID // Monotonical increasing reqeust number
 	View    ID
 
 	resultc chan Result
@@ -22,13 +32,11 @@ type Client struct {
 	conn *net.TCPConn // TCP connection to the current leader
 	enc  *gob.Encoder
 	dec  *gob.Decoder
-
-	stopc chan struct{}
 }
 
 // NewClient creates new client instance with given information
-func NewClient(leader string, id ID, laddr string) (*Client, error) {
-	addr, err := net.ResolveTCPAddr("tcp", leader)
+func NewClient(config ClientConfig) (*Client, error) {
+	addr, err := net.ResolveTCPAddr("tcp", config.LeaderAddr)
 	if err != nil {
 		return nil, err
 	}
@@ -39,14 +47,13 @@ func NewClient(leader string, id ID, laddr string) (*Client, error) {
 	}
 
 	client := &Client{
-		ID:      id,
-		Leader:  leader,
+		ID:      config.ID,
+		Config:  config,
 		Request: 1,
 		View:    1,
 		conn:    conn,
 		enc:     gob.NewEncoder(conn),
 		dec:     gob.NewDecoder(conn),
-		stopc:   make(chan struct{}),
 		resultc: make(chan Result, 10),
 		Results: make(map[ID]Result),
 	}
@@ -54,8 +61,8 @@ func NewClient(leader string, id ID, laddr string) (*Client, error) {
 	return client, nil
 }
 
-// Send sends the request with given command and args
-func (c *Client) Send(com Command, args []byte) error {
+// Do sends the request with given command and args, then waits for the response
+func (c *Client) Do(com Command, args []byte) (Result, error) {
 	c.mu.RLock()
 	conn := c.conn
 	enc := c.enc
@@ -63,7 +70,7 @@ func (c *Client) Send(com Command, args []byte) error {
 
 	// Check the connection
 	if _, err := conn.Write(nil); err != nil {
-		return err
+		return 0, err
 	}
 	// TODO: Try to get the address of new leader
 
@@ -78,37 +85,32 @@ func (c *Client) Send(com Command, args []byte) error {
 	}
 
 	if err := enc.Encode(req); err != nil {
-		return err
+		return 0, err
 	}
 
 	c.mu.Lock()
 	c.Request++
 	c.mu.Unlock()
 
-	return nil
-}
+	go func() {
+		msg := Msg{}
+		if err := c.dec.Decode(&msg); err != nil {
+			return
+		}
+		c.addResult(&msg)
+	}()
 
-// Get receives the result
-func (c *Client) Get() <-chan Result {
-	return c.resultc
+	select {
+	case res := <-c.resultc:
+		return res, nil
+		// case <-time.After(c.Config.Timeout):
+		// 	return 0, errors.New("Timeout")
+	}
 }
 
 // Start creates the client with connection to the current leader
 func (c *Client) Start() {
 	log.Printf("Starting with laddr: %s\n", c.conn.LocalAddr().String())
-	go c.handleResult()
-}
-
-func (c *Client) handleResult() {
-	for {
-
-		msg := Msg{}
-		if err := c.dec.Decode(&msg); err != nil {
-			return
-		}
-
-		go c.addResult(&msg)
-	}
 }
 
 func (c *Client) addResult(msg *Msg) {
@@ -128,7 +130,5 @@ func (c *Client) addResult(msg *Msg) {
 	c.mu.Unlock()
 
 	// This might block, so don't use defer Unlock()
-	go func() {
-		c.resultc <- msg.Result
-	}()
+	c.resultc <- msg.Result
 }

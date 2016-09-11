@@ -3,26 +3,37 @@ package main
 import (
 	"fmt"
 	"log"
+	"time"
 
-	"github.com/seuchi/vr"
+	"github.com/topecongiro/vr"
 )
 
 func main() {
-	client, err := vr.NewClient(":1231", 1, ":5555")
+	config := vr.ClientConfig{
+		LeaderAddr: ":1231",
+		ID:         1,
+		View:       1,
+		Timeout:    time.Second,
+	}
+	client, err := vr.NewClient(config)
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	client.Start()
 
-	loop := 1
-	for {
-		fmt.Printf("Loop %d\n", loop)
-		client.Send(vr.Inc, []byte{})
-		client.Send(vr.Get, []byte{})
-		fmt.Printf("Messages sent\n")
-		// result := <-client.Get()
-		// log.Printf("Received %d\n", result)
-		loop++
+	var sum int
+	for i := 0; i < 1000; i++ {
+		res, err := client.Do(vr.Inc, []byte{})
+		if err != nil {
+			fmt.Printf("%s\n", err)
+			return
+		}
+		sum = int(res)
+	}
+	if sum != 1000 {
+		log.Printf("test failed...sum = %d\n", sum)
+	} else {
+		fmt.Println("Success!")
 	}
 }
