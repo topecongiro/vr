@@ -19,6 +19,8 @@ type clientInfo struct {
 	recent ID
 	result Msg
 	conn   *net.TCPConn
+	enc    *gob.Encoder
+	dec    *gob.Decoder
 }
 
 // canonical implementaiton of Mediator interface
@@ -53,7 +55,6 @@ func (vr *vrMediator) Process(m Msg) error {
 	switch m.Type {
 	case RequestT:
 		if vr.isLeader() {
-			log.Printf("Primary %d received request\n", vr.ID)
 			m.print()
 			ci := vr.ClientTable[m.Client]
 			if m.Request < ci.recent {
@@ -121,7 +122,6 @@ func (vr *vrMediator) Start() error {
 		var debug int
 		id := vr.ID
 		for {
-			log.Printf("Node(%d): loop %d\n", id, debug)
 			if vr.isLeader() {
 				select {
 				case <-vr.received:
@@ -154,13 +154,14 @@ func (vr *vrMediator) StartViewChange() error {
 
 // AddClient update the client table with new client
 func (vr *vrMediator) AddClient(id ID, conn *net.TCPConn) error {
-	log.Printf("Replica(%d) add client with id %d\n", vr.ID, id)
 	if _, ok := vr.ClientTable[id]; ok {
 		return nil
 	}
 
 	vr.ClientTable[id] = &clientInfo{
 		conn: conn,
+		enc:  gob.NewEncoder(conn),
+		dec:  gob.NewDecoder(conn),
 	}
 
 	return nil
@@ -213,7 +214,6 @@ func (vr *vrMediator) commit(upTo ID) {
 	for vr.Commit < upTo {
 		vr.Commit++
 		m := vr.log.Get(vr.Commit)
-		log.Printf("Replica(%d) commiting %d from %d\n", vr.ID, vr.Commit, m.Client)
 		result, err := vr.sm.Exec(m.Command, m.Args)
 		if err != nil {
 			log.Fatal(err)
@@ -224,7 +224,33 @@ func (vr *vrMediator) commit(upTo ID) {
 		}
 		ci.result = Msg{Result: Result(result)}
 		if vr.isLeader() {
-			vr.reply(m)
+			rep := m
+			rep.Result = Result(result)
+			vr.reply(rep)
+		}
+	}
+}
+
+func (vr *vrMediator) handleClient(conn *net.TCPConn) {
+	// Get client ID from the first message
+	msg := Msg{}
+	dec := gob.NewDecoder(conn)
+	if err := dec.Decode(&msg); err != nil {
+		log.Printf("Replica(%d): %s\n", vr.ID, err)
+		return
+	}
+	vr.AddClient(msg.Client, conn)
+	if err := vr.Process(msg); err != nil {
+		log.Fatal("State machine failed")
+	}
+	for {
+		msg := Msg{}
+		if err := dec.Decode(&msg); err != nil {
+			log.Printf("Replica(%d): %s\n", vr.ID, err)
+			return
+		}
+		if err := vr.Process(msg); err != nil {
+			log.Fatal("State machine failed")
 		}
 	}
 }
@@ -236,7 +262,6 @@ func (vr *vrMediator) reply(m Msg) {
 		return
 	}
 
-	log.Printf("primary %d replying to %d(%s)\n", vr.ID, m.Client, ci.conn.RemoteAddr().String())
-	enc := gob.NewEncoder(ci.conn)
-	enc.Encode(&m)
+	log.Printf("primary %d replying to %d(%s), reply = %d\n", vr.ID, m.Client, ci.conn.RemoteAddr().String(), m.Result)
+	ci.enc.Encode(&m)
 }
