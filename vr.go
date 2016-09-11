@@ -29,6 +29,7 @@ type Mediator interface {
 	StartViewChange() error
 	AddClient(ID, *net.TCPConn) error
 	Start() error
+	handleClient(*net.TCPConn)
 }
 
 // StateMachine implements genereal methods for replicated state machine.
